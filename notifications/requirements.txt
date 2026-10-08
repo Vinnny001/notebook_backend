@@ -1,0 +1,4 @@
+celery==5.4.0
+pytest==8.3.3
+pydantic-settings==2.5.2
+redis==5.0.8
