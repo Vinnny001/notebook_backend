@@ -1,0 +1,105 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-notebook}
+      POSTGRES_USER: ${POSTGRES_USER:-notebook}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-notebook}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-09-13T20-26-02Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-notebook}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-notebook-password}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  core-api:
+    build:
+      context: ./core-api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://notebook:notebook@postgres:5432/notebook}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./core-api/app:/app/app
+      - ./core-api/alembic:/app/alembic
+
+  collaboration:
+    build:
+      context: ./collaboration
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./collaboration/app:/app/app
+
+  notifications:
+    build:
+      context: ./notifications
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/1}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./notifications/app:/app/app
+
+  gateway:
+    image: nginx:1.27-alpine
+    depends_on:
+      - core-api
+      - collaboration
+    ports:
+      - "8080:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  postgres-data:
+  minio-data:
